@@ -244,16 +244,26 @@ class GeneralizedWishartProcess(object):
     def optimal_params(self, burnin=200):
         return self.samples[np.argmax(self.diagnostics[burnin:, 0]) + burnin]
 
-    def predict_next_timepoint(self, data, burnin=200):
+    def _predict_next_u(self, T, burnin=200):
         u, tau, L = self.optimal_params(burnin)
-        T = data.shape[1]
 
         K = self._construct_kernel(tau, range(T + 1))
-        Kbinv = np.linalg.inv(K[:T, :T])
-        idx = np.prod(u.shape)
-        A = K[idx:, :idx]
-        ustar = np.reshape(np.matmul(np.matmul(A, Kbinv), u),
-                           (self.Nu, self.N, 1))
+        idxs = np.full(K.shape[0], True)
+        idxs[np.asarray(list(range(T, int(len(u)/T*(T+1)), T + 1)))] = False
+        Kbinv = np.linalg.inv(K[idxs, :][:, idxs])
+        print(K.shape)
+        print(Kbinv.shape)
+        A = K[np.logical_not(idxs), :][:, idxs]
+        print(A.shape)
+        print(np.sum(A != 0))
+        ustar = np.matmul(np.matmul(A, Kbinv), u)
+        
+        return ustar
 
-        return compute_sigma(L, ustar[:, :, 0])
+    def predict_next_timepoint(self, data, burnin=200):
+        u, tau, L = self.optimal_params(burnin)
+        ustar = self._predict_next_u(data.shape[1], burnin)
+        ustar = np.reshape(ustar, (self.Nu, self.N, 1))
+
+        return self.compute_sigma(L, ustar[:, :, 0])
 

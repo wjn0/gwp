@@ -7,7 +7,7 @@ def ou(t1, t2, params):
     """
     tau = params[0]
     
-    return SIG_VAR * np.exp(-abs(t2 - t1)/tau)
+    return np.exp(-abs(t2 - t1)/tau)
 
 def squared_exponential(t1, t2, params):
     """
@@ -15,7 +15,7 @@ def squared_exponential(t1, t2, params):
     """
     tau = params[0]
     
-    return SIG_VAR * np.exp(-((t1 - t2)/tau)**2)
+    return np.exp(-((t1 - t2)/tau)**2)
 
 def periodic(t1, t2, params):
     """
