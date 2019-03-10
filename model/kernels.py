@@ -24,3 +24,12 @@ def periodic(t1, t2, params):
     tau = params[0]
     
     return np.exp(-2*np.sin((t1 - t2)/2)**2/tau**2)
+
+def generate_sum_kernel(k1, k2):
+    def k(t1, t2, params):
+        p1, p2 = params
+
+        return 0.5 * k1(t1, t2, [p1]) + 0.5 * k2(t1, t2, [p2])
+    
+    return k
+

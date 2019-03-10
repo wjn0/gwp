@@ -3,7 +3,7 @@ import emcee
 
 class GaussianProcess(object):
     def __init__(self, kernel, nwalkers, tau_prior_mean, tau_prior_var,
-                 sig_var_prior_alpha, sig_var_prior_beta):
+                 sig_var_prior_alpha, sig_var_prior_beta, num_taus=1):
         """
         Basic Gaussian process model which allows for Bayesian estimation of the
         scale and signal variance parameters.
@@ -23,8 +23,9 @@ class GaussianProcess(object):
             'SIG_VAR_PRIOR_ALPHA': sig_var_prior_alpha,
             'SIG_VAR_PRIOR_BETA': sig_var_prior_beta
 	}
+        self.num_params = num_taus + 1
 
-    def _construct_kernel(self, tau, sig_var, times):
+    def _construct_kernel(self, params, times):
         """
         Construct the kernel matrix for a given input set.
 
@@ -35,12 +36,15 @@ class GaussianProcess(object):
         Returns a T x T kernel matrix constructed accordingly.
         """
         k = self.parameters['KERNEL']
+        sig_var = params[-1]
+        params = params[:-1]
+
         T = len(times)
         K = np.eye(T)
         for t1 in range(T):
             for t2 in range(t1, T):
                 if t1 != t2:
-                    el = sig_var * k(times[t1], times[t2], [tau])
+                    el = sig_var * k(times[t1], times[t2], params)
                     K[t1, t2] = el
                     K[t2, t1] = el
 
@@ -61,13 +65,16 @@ class GaussianProcess(object):
         sig_beta = self.parameters['SIG_VAR_PRIOR_BETA']
 
         def log_likelihood(params):
-            tau, sig_var = params
-            if tau > 0 and sig_var < 1 and sig_var > 0:
-                K = self._construct_kernel(tau, sig_var, range(len(data)))
+            sig_var = params[-1]
+            taus = params[:-1]
+            if (taus > 0).all() and sig_var < 1 and sig_var > 0:
+                K = self._construct_kernel(params, range(len(data)))
                 Kinv = np.linalg.inv(K)
 
                 loglik = -0.5 * np.matmul(data, np.matmul(Kinv, data))
-                logtauprior = np.log(1/tau) - 0.5*(np.log(tau) - tau_mean)**2/tau_var
+                logtauprior = np.sum(
+                    np.log(1/taus) - 0.5*(np.log(taus) - tau_mean)**2/tau_var
+                )
                 logsigprior = np.log(sig_var**(sig_alpha - 1)) + np.log((1 - sig_var)**(sig_beta - 1))
 
                 return loglik + logtauprior + logsigprior
@@ -76,32 +83,38 @@ class GaussianProcess(object):
 
         nwalkers = self.parameters['NWALKERS']
         if not init:
-            init = [
-                [np.random.lognormal(tau_mean, tau_var),
-                 np.random.beta(sig_alpha, sig_beta)] for _ in range(nwalkers)
-            ]
+            if self.num_params > 2:
+                init = [
+                    np.concatenate((
+                        [np.random.lognormal(tau_mean, tau_var) for _ in range(self.num_params - 1)],
+                        [np.random.beta(sig_alpha, sig_beta)]
+                    )) for _ in range(nwalkers)
+                ]
+            else:
+                init = [
+                    [np.random.lognormal(tau_mean, tau_var),
+                     np.random.beta(sig_alpha, sig_beta)] for _ in range(nwalkers)
+                ]
 
-        sampler = emcee.EnsembleSampler(nwalkers, 2, log_likelihood)
+        sampler = emcee.EnsembleSampler(nwalkers, self.num_params, log_likelihood)
         ret = sampler.run_mcmc(init, numit)
         self.chain = sampler.chain
+        self.data = data
         self.terminals = ret[0]
         self.likelihoods = ret[1]
-        self.data = data
          
         return self.chain
 
-    def optimal_params(self, burnin=50):
+    def optimal_params(self):
         """
         Gets the optimal parameters of the model.
-
-        burnin: The number of samples to consider burn-in.
 
         Returns the model parameters which are after the burn-in period and
         give the maximum data likelihood.
         """
-        return self.terminals[np.argmax(self.likelihoods[burnin:]) + burnin, :]
+        return self.terminals[np.argmax(self.likelihoods), :]
 
-    def predict_next_timepoint(self, burnin=50):
+    def predict_next_timepoint(self):
         """
         Predicts the value of the function at the next timepoint.
 
@@ -110,9 +123,9 @@ class GaussianProcess(object):
         Returns the predicted function value at T + 1, where T is the number of
         training timepoints.
         """
-        tau, sig_var = self.optimal_params(burnin)
+        params = self.optimal_params()
         T = len(self.data)
-        K = self._construct_kernel(tau, sig_var, range(T + 1))
+        K = self._construct_kernel(params, range(T + 1))
 
         return np.matmul(K[:T, T], np.matmul(np.linalg.inv(K[:T, :T]), self.data))
 

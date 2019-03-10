@@ -191,7 +191,7 @@ class GeneralizedWishartProcess(object):
 
         return L * self.parameters['L_PRIOR_VAR']
 
-    def fit(self, data, init=None, numit=1_000, progress=True):
+    def fit(self, data, init=None, numit=1_000, progress=10):
         """
         Fit the model using a Gibbs sampling routine.
 
@@ -225,17 +225,23 @@ class GeneralizedWishartProcess(object):
             logtau, logtau_prob = self._sample_logtau(logtau, u, T, L, Nu, data)
             L, L_prob = self._sample_L(L, np.exp(logtau), u, Nu, data)
             
-            if progress and it % 10 is 0:
-                print(
-                    "Iteration {}: loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}, log P(L|...) = {:.2f}".format(
-                        it, data_lik, u_prob, logtau_prob, L_prob
-                    )
-                )
-
             samples.append([u, np.exp(logtau), L])
             diagnostics.append([data_lik, u_prob, logtau_prob, L_prob])
 
-
+            if progress and it % progress is 0:
+                if it >= numit // 5:
+                    print(
+                        "Best ({}): loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}, log P(L|...) = {:.2f}".format(
+                            it, *max(diagnostics[(numit // 5):], key=lambda a: a[0])
+                        )
+                    )
+                else:
+                    print(
+                        "Iter {}: loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}    , log P(L|...) = {:.2f}".format(
+235                             it, *diagnostics[-1]
+                        )
+                    )
+            
         self.samples = samples
         self.diagnostics = np.asarray(diagnostics)
 
@@ -251,11 +257,7 @@ class GeneralizedWishartProcess(object):
         idxs = np.full(K.shape[0], True)
         idxs[np.asarray(list(range(T, int(len(u)/T*(T+1)), T + 1)))] = False
         Kbinv = np.linalg.inv(K[idxs, :][:, idxs])
-        print(K.shape)
-        print(Kbinv.shape)
         A = K[np.logical_not(idxs), :][:, idxs]
-        print(A.shape)
-        print(np.sum(A != 0))
         ustar = np.matmul(np.matmul(A, Kbinv), u)
         
         return ustar
