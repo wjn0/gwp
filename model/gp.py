@@ -50,6 +50,30 @@ class GaussianProcess(object):
 
         return K
 
+    def likelihood(self, params):
+        tau_mean = self.parameters['TAU_PRIOR_MEAN']
+        tau_var = self.parameters['TAU_PRIOR_VAR']
+        sig_alpha = self.parameters['SIG_VAR_PRIOR_ALPHA']
+        sig_beta = self.parameters['SIG_VAR_PRIOR_BETA']
+
+        sig_var = params[-1]
+        taus = params[:-1]
+
+        if (taus > 0).all() and sig_var < 1 and sig_var > 0:
+            K = self._construct_kernel(params, range(len(self.data)))
+            Kinv = np.linalg.inv(K)
+
+            loglik = -0.5 * np.matmul(self.data, np.matmul(Kinv, self.data))
+            logtauprior = np.sum(
+                np.log(1/taus) - 0.5*(np.log(taus) - tau_mean)**2/tau_var
+            )
+            logsigprior = np.log(sig_var**(sig_alpha - 1)) + np.log((1 - sig_var)**(sig_beta - 1))
+
+            return loglik + logtauprior + logsigprior
+        else:
+            return -np.inf
+
+
     def fit(self, data, init=None, numit=500):
         """
         Estimate the model parameters using a dataset.
@@ -63,25 +87,10 @@ class GaussianProcess(object):
         tau_var = self.parameters['TAU_PRIOR_VAR']
         sig_alpha = self.parameters['SIG_VAR_PRIOR_ALPHA']
         sig_beta = self.parameters['SIG_VAR_PRIOR_BETA']
-
-        def log_likelihood(params):
-            sig_var = params[-1]
-            taus = params[:-1]
-            if (taus > 0).all() and sig_var < 1 and sig_var > 0:
-                K = self._construct_kernel(params, range(len(data)))
-                Kinv = np.linalg.inv(K)
-
-                loglik = -0.5 * np.matmul(data, np.matmul(Kinv, data))
-                logtauprior = np.sum(
-                    np.log(1/taus) - 0.5*(np.log(taus) - tau_mean)**2/tau_var
-                )
-                logsigprior = np.log(sig_var**(sig_alpha - 1)) + np.log((1 - sig_var)**(sig_beta - 1))
-
-                return loglik + logtauprior + logsigprior
-            else:
-                return -np.inf
-
         nwalkers = self.parameters['NWALKERS']
+
+        self.data = data
+
         if not init:
             if self.num_params > 2:
                 init = [
@@ -96,23 +105,19 @@ class GaussianProcess(object):
                      np.random.beta(sig_alpha, sig_beta)] for _ in range(nwalkers)
                 ]
 
-        sampler = emcee.EnsembleSampler(nwalkers, self.num_params, log_likelihood)
+        sampler = emcee.EnsembleSampler(nwalkers, self.num_params, self.likelihood)
         ret = sampler.run_mcmc(init, numit)
         self.chain = sampler.chain
-        self.data = data
         self.terminals = ret[0]
         self.likelihoods = ret[1]
          
         return self.chain
 
-    def optimal_params(self):
+    def optimal_params(self, burnin=100):
         """
         Gets the optimal parameters of the model.
-
-        Returns the model parameters which are after the burn-in period and
-        give the maximum data likelihood.
         """
-        return self.terminals[np.argmax(self.likelihoods), :]
+        return np.mean(self.chain[:, burnin:, :].reshape(-1, self.chain.shape[2]), axis=0)
 
     def predict_next_timepoint(self):
         """

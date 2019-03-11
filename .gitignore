@@ -1,5 +1,5 @@
 .ipynb_checkpoints/
 __pychache__/
-*/__pychache__
+*/**/__pychache__
 data.txt
 

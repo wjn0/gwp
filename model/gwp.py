@@ -229,18 +229,11 @@ class GeneralizedWishartProcess(object):
             diagnostics.append([data_lik, u_prob, logtau_prob, L_prob])
 
             if progress and it % progress is 0:
-                if it >= numit // 5:
-                    print(
-                        "Best ({}): loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}, log P(L|...) = {:.2f}".format(
-                            it, *max(diagnostics[(numit // 5):], key=lambda a: a[0])
-                        )
-                    )
-                else:
-                    print(
-                        "Iter {}: loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}    , log P(L|...) = {:.2f}".format(
-235                             it, *diagnostics[-1]
-                        )
-                    )
+                print(
+                    "Iter {}: loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}, log P(L|...) = {:.2f}".format(it, *diagnostics[-1])
+                )
+
+        print("Optimal likelihood: {:.3f}".format(np.max(diagnostics[:, 0])))
             
         self.samples = samples
         self.diagnostics = np.asarray(diagnostics)

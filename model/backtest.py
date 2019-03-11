@@ -18,6 +18,82 @@ def _extend_gwp_params(gwp, burnin, t):
 
     return init
 
+def _extend_gwp_params_window(gwp, burnin, t):
+    N, Nu = gwp.N, gwp.Nu
+    ustar = gwp._predict_next_u(t, burnin)
+    opt = gwp.optimal_params(burnin)
+    uprev = opt[0].reshape(Nu, N, -1)
+    uinit = np.concatenate((uprev, ustar.reshape(Nu, N, 1)), axis=2)[:, :, 1:].flatten()
+
+    init = {
+        'logtau': np.log(opt[1]),
+        'u': uinit,
+        'L': opt[2]
+    }
+
+    return init
+
+def backtest_gwp_window(full_data, start_point, gwp_kernel, numit=500, progress=100):
+    N, T = full_data.shape
+    burnin = numit // 5
+    predictions = []
+
+    print("Fitting initial model (T = {})...".format(start_point))
+
+    for t in range(start_point, T):
+        print("Fitting models for T = {}...".format(t))
+        sys.stdout.flush()
+
+        gwp = GWP(0.95, gwp_kernel, 0, 1, 1e-1)
+        gwp.fit(full_data[:, (t-start_point):t], numit=numit, progress=progress)
+
+        predictions.append(
+            gwp.predict_next_timepoint(full_data[:, (t-start_point):t], burnin=burnin)
+        )
+
+    return predictions
+
+
+def backtest_gp_window(full_data, start_point, gp_kernel, numit=300,
+                       num_taus=1, nwalkers=250):
+    N, T = full_data.shape
+    predictions = []
+
+    for t in range(start_point, T):
+        print("Fitting models (T = {})...".format(t), end=" ")
+        sys.stdout.flush()
+        gps = [
+            GP(
+                gp_kernel,
+                nwalkers,
+                0, 1,
+                10, 1.1,
+                num_taus=num_taus
+            ) for _ in range(N)
+        ]
+        for n in range(N):
+            gps[n].fit(full_data[n, (t-start_point):t], numit=numit)
+
+            print(n, end=" ")
+            sys.stdout.flush()
+
+        print("")
+        sys.stdout.flush()
+
+        print(np.asarray([
+            gps[n].optimal_params() for n in range(N)
+        ]))
+
+        print([
+            gps[n].likelihood(gps[n].optimal_params()) for n in range(N)
+        ])
+
+        predictions.append([
+            gps[n].predict_next_timepoint() for n in range(N)
+        ])
+
+    return predictions
+
 def backtest_gwp(full_data, start_point, gwp_kernel, initial_numit=1_000,
                  successive_numit=500):
     N, T = full_data.shape
@@ -28,7 +104,7 @@ def backtest_gwp(full_data, start_point, gwp_kernel, initial_numit=1_000,
     gwp = GWP(
         0.95,
         gwp_kernel,
-        0.5, 2,
+        0, 1,
         1e-1
     )
     gwp.fit(full_data[:, :start_point], numit=initial_numit)

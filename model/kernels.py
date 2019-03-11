@@ -15,21 +15,29 @@ def squared_exponential(t1, t2, params):
     """
     tau = params[0]
     
-    return np.exp(-((t1 - t2)/tau)**2)
+    return np.exp(-0.5*((t1 - t2)/tau)**2)
 
 def periodic(t1, t2, params):
     """
     A simple periodic kernel function.
     """
-    tau = params[0]
+    p, tau = params
     
-    return np.exp(-2*np.sin((t1 - t2)/2)**2/tau**2)
+    return np.exp(-2*np.sin(np.pi*(t1 - t2)/p)**2/tau**2)
 
-def generate_sum_kernel(k1, k2):
+def generate_sum_kernel(k1, k2, num_taus=(1, 1)):
     def k(t1, t2, params):
-        p1, p2 = params
+        p1, p2 = params[:num_taus[0]], params[num_taus[0]:]
 
-        return 0.5 * k1(t1, t2, [p1]) + 0.5 * k2(t1, t2, [p2])
+        return 0.5 * k1(t1, t2, p1) + 0.5 * k2(t1, t2, p2)
     
+    return k
+
+def generate_prod_kernel(k1, k2, num_taus=(1, 1)):
+    def k(t1, t2, params):
+        p1, p2 = params[:num_taus[0]], params[num_taus[0]:]
+
+        return k1(t1, t2, p1) * k2(t1, t2, p2)
+
     return k
 
