@@ -7,7 +7,7 @@ class GeneralizedWishartProcess(object):
         """
         Initialize the model with parameters.
 
-        sig_var: The signal variance for the kernel. Used to keep it PSD.
+        sig_var: The signal variance for the kernel.
         kernel:  The kernel function to use. Must accept arguments like
                  (t1, t2, tau).
         tau_prior_*: The prior over tau will be
@@ -22,7 +22,8 @@ class GeneralizedWishartProcess(object):
             'TAU_PRIOR_MEAN': tau_prior_mean,
             'TAU_PRIOR_VAR': tau_prior_var,
             'L_PRIOR_VAR': L_prior_var,
-            'MH_L_SCALE': L_prior_var/10
+            'MH_L_SCALE': L_prior_var/10,
+            'TAU_SCALE': tau_prior_var/100
         }
 
     def _construct_kernel(self, params, times):
@@ -43,19 +44,18 @@ class GeneralizedWishartProcess(object):
             """
             return lambda a, b, c: a * (n * t) + b * n + c
         T = len(times)
-        Nu, N, h = params.shape
-        kernel_idx = kidx(N, T)
 
-        K = np.eye(np.prod([Nu, N, T]))
+        K = np.eye(np.prod([self.Nu, self.N, T]))
         k = self.parameters['KERNEL']
-        for nu in range(Nu):
-            for n in range(N):
+        for nu in range(self.Nu):
+            for n in range(self.N):
                 for t1 in range(T):
                     for t2 in range(t1, T):
                         if t1 != t2:
-                            i = kernel_idx(nu, n, t1)
-                            j = kernel_idx(nu, n, t2)
-                            K[i, j] = k(times[t1], times[t2], [params[nu, n, 0],
+                            i = t1 * self.Nu * self.N + self.N * nu + n
+                            j = t2 * self.Nu * self.N + self.N * nu + n
+                            p = nu * self.N + n
+                            K[i, j] = k(times[t1], times[t2], [params[p],
                                                                self.parameters['SIG_VAR']])
 
         return K
@@ -71,21 +71,22 @@ class GeneralizedWishartProcess(object):
 
         Returns the N x N covariance matrix.
         """
-        Nu = u.shape[0]
         Sig = np.zeros(L.shape)
-        for nu in range(Nu):
-            Sig += np.matmul(L, np.matmul(np.outer(u[nu, :], u[nu, :]), L.T))
+        for nu in range(self.Nu):
+            idx = nu * self.N
+            Sig += np.matmul(L, np.matmul(np.outer(u[idx:(idx+self.N)], u[idx:(idx+self.N)]), L.T))
 
         return Sig
 
-    def _log_data_likelihood(self, data, u, L, Nu):
+    def _log_data_likelihood(self, u, L):
         """
         We use the simplest possible data likelihood: sum over all times t in
         [T], computing the probability of observing the data given that it comes
         from the distribution r(t) ~ N(0, Σ(t)).
 
         data: The observed data, of shape N x T.
-        u:    The flattened vector of constructive GP function values.
+        u:    The flattened vector of constructive GP function values, in order
+              Nu, T, N.
         L:    The lower cholesky decomposition of the scale Wishart prior.
         Nu:   d.f.
 
@@ -93,11 +94,11 @@ class GeneralizedWishartProcess(object):
         parameters.
         """
         loglik = 0
-        N, T = data.shape
-        u = np.reshape(u, (Nu, N, T))
+        T = self.data.shape[1]
         for t in range(T):
-            Siginv = np.linalg.inv(self.compute_sigma(L, u[:, :, t]))
-            term = -0.5*np.matmul(data[:, t].T, np.matmul(Siginv, data[:, t]))
+            idx = self.Nu * self.N * t
+            Siginv = np.linalg.inv(self.compute_sigma(L, u[idx:(idx+self.Nu*self.N)]))
+            term = -0.5*np.matmul(self.data[:, t].T, np.matmul(Siginv, self.data[:, t]))
             loglik += term
 
         return loglik
@@ -113,12 +114,12 @@ class GeneralizedWishartProcess(object):
 
         ellipse = np.random.multivariate_normal(np.zeros(K.shape[0]), K)
         u = np.random.uniform()
-        logy = self._log_data_likelihood(data, f, L, Nu) + np.log(u)
+        logy = self._log_data_likelihood(f, L) + np.log(u)
         angle = np.random.uniform(high=2*np.pi)
         angle_min, angle_max = angle - 2*np.pi, angle
         while True:
             fp = f*np.cos(angle) + ellipse*np.sin(angle)
-            log_data_lik = self._log_data_likelihood(data, fp, L, Nu)
+            log_data_lik = self._log_data_likelihood(fp, L)
             if log_data_lik > logy:
                 log_u_lik = -0.5*np.matmul(fp, np.matmul(Kinv, fp))
                 return fp, log_data_lik + log_u_lik
@@ -136,7 +137,6 @@ class GeneralizedWishartProcess(object):
         chain.
         """
         def log_logtau_prob(logtaup):
-            logtaup = np.reshape(logtaup, logtau.shape)
             K = self._construct_kernel(np.exp(logtaup), range(T))
             Kinv = np.linalg.inv(K)
             log_u_prob = -0.5*np.matmul(u, np.matmul(Kinv, u))
@@ -149,9 +149,9 @@ class GeneralizedWishartProcess(object):
         dim = np.prod(logtau.shape)
         sampler = emcee.MHSampler(np.eye(dim), dim=dim,
                                   lnprobfn=log_logtau_prob)
-        logtaup, _, _ = sampler.run_mcmc(logtau.flatten(), 1)
+        logtaup, _, _ = sampler.run_mcmc(logtau, 1)
 
-        return np.reshape(logtaup, logtau.shape), log_logtau_prob(logtaup)
+        return logtaup, log_logtau_prob(logtaup)
 
     def _sample_L(self, L, tau, u, Nu, data):
         """
@@ -164,7 +164,7 @@ class GeneralizedWishartProcess(object):
             Lpm[np.tril_indices(L.shape[0])] = Lp
             log_prior = np.sum(-0.5 * Lp**2 / self.parameters['L_PRIOR_VAR'])
 
-            return self._log_data_likelihood(data, u, Lpm, Nu) + log_prior
+            return self._log_data_likelihood(u, Lpm) + log_prior
 
         dim = int((L.shape[0]**2 + L.shape[0])/2)
         scale = self.parameters['MH_L_SCALE']
@@ -177,14 +177,13 @@ class GeneralizedWishartProcess(object):
         return Lpm, log_L_prob(Lp)
 
     def _init_u(self, T, tau):
-        N, Nu, _ = tau.shape
         K = self._construct_kernel(tau, range(T))
         draw = np.random.multivariate_normal(np.zeros(K.shape[0]), K)
 
         return draw
 
     def _init_logtau(self, Nu, N):
-        return np.random.normal(size=(Nu, N, 1))
+        return np.random.normal(size=self.Nu * self.N)
 
     def _init_L(self, N):
         L = np.eye(N)
@@ -203,6 +202,7 @@ class GeneralizedWishartProcess(object):
         posterior probabilities).
         """
         samples, diagnostics = [], []
+        self.data = data
 
         N, T = data.shape
         Nu = N + 1
@@ -220,7 +220,7 @@ class GeneralizedWishartProcess(object):
         samples.append([u, np.exp(logtau), L])
 
         for it in range(numit):
-            data_lik = self._log_data_likelihood(data, u, L, Nu)
+            data_lik = self._log_data_likelihood(u, L)
             u, u_prob = self._sample_u(u, np.exp(logtau), T, L, Nu, data)
             logtau, logtau_prob = self._sample_logtau(logtau, u, T, L, Nu, data)
             L, L_prob = self._sample_L(L, np.exp(logtau), u, Nu, data)
@@ -233,10 +233,9 @@ class GeneralizedWishartProcess(object):
                     "Iter {}: loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}, log P(L|...) = {:.2f}".format(it, *diagnostics[-1])
                 )
 
-        print("Optimal likelihood: {:.3f}".format(np.max(diagnostics[:, 0])))
-            
         self.samples = samples
         self.diagnostics = np.asarray(diagnostics)
+        print("Optimal likelihood: {:.3f}".format(np.max(self.diagnostics[:, 0])))
 
         return samples, diagnostics
 
@@ -258,7 +257,6 @@ class GeneralizedWishartProcess(object):
     def predict_next_timepoint(self, data, burnin=200):
         u, tau, L = self.optimal_params(burnin)
         ustar = self._predict_next_u(data.shape[1], burnin)
-        ustar = np.reshape(ustar, (self.Nu, self.N, 1))
 
-        return self.compute_sigma(L, ustar[:, :, 0])
+        return self.compute_sigma(L, ustar)
 
