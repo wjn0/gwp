@@ -1,7 +1,15 @@
 import numpy as np
 import emcee
 
+"""
+Contains the code for the generalized Wishart process model as described by
+Wilson and Ghahramani in their paper https://arxiv.org/abs/1101.0240.
+"""
+
 class GeneralizedWishartProcess(object):
+    """
+    Fits and predicts a GWP model.
+    """
     def __init__(self, sig_var, kernel, tau_prior_mean, tau_prior_var,
                  L_prior_var):
         """
@@ -81,10 +89,10 @@ class GeneralizedWishartProcess(object):
     def _log_data_likelihood(self, u, L):
         """
         Compute the likelihood of observing the data given the model parameters
-        u and L which completely determine Î. We use the simplest possible data
-        likelihood: sum over all times t in 1, ..., T and computing the log-
-        probability of observing the data given that it comes from the
-        distribution r(t) ~ N(0, Î£(t)).
+        u and L which completely determine Sigma. We use the simplest possible
+        data likelihood: sum over all times t in 1, ..., T and computing the
+        log-probability of observing the data given that it comes from the
+        distribution r(t) ~ N(0, Sigma(t)).
 
         u:    The vector of GP function values, of size Nu * N * T.
         L:    The lower Cholesky factor of the scale Wishart prior.
@@ -264,17 +272,17 @@ class GeneralizedWishartProcess(object):
             u = init['u']
             L = init['L']
         else:
-            u = self._init_u(T, np.exp(self._init_logtau(Nu, N)))
-            logtau = self._init_logtau(Nu, N)
+            u = self._init_u(T, np.exp(self._init_logtau()))
+            logtau = self._init_logtau()
             L = self._init_L(N)
 
         samples.append([u, np.exp(logtau), L])
 
         for it in range(numit):
             data_lik = self._log_data_likelihood(u, L)
-            u, u_prob = self._sample_u(u, np.exp(logtau), T, L, Nu, data)
-            logtau, logtau_prob = self._sample_logtau(logtau, u, T, L, Nu, data)
-            L, L_prob = self._sample_L(L, np.exp(logtau), u, Nu, data)
+            u, u_prob = self._sample_u(u, np.exp(logtau), L)
+            logtau, logtau_prob = self._sample_logtau(logtau, u, L)
+            L, L_prob = self._sample_L(L, u)
             
             samples.append([u, np.exp(logtau), L])
             diagnostics.append([data_lik, u_prob, logtau_prob, L_prob])
