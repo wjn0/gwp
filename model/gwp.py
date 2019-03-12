@@ -5,16 +5,15 @@ class GeneralizedWishartProcess(object):
     def __init__(self, sig_var, kernel, tau_prior_mean, tau_prior_var,
                  L_prior_var):
         """
-        Initialize the model with parameters.
+        Initialize a generalized Wishart process model with the given
+        parameters.
 
         sig_var: The signal variance for the kernel.
         kernel:  The kernel function to use. Must accept arguments like
                  (t1, t2, tau).
-        tau_prior_*: The prior over tau will be
-                     LogNormal(tau_prior_mean, tau_prior_var).
+        tau_prior_mean: The mean of the LogNormal prior over tau.
+        tau_prior_var: The variance of the LogNormal prior over tau.
         L_prior_var: The prior (Gaussian) variance over the elements of L.
-                     Should be set to the same order of magnitude of the
-                     elements of the dataset.
         """
         self.parameters = {
             'SIG_VAR': sig_var,
@@ -30,10 +29,8 @@ class GeneralizedWishartProcess(object):
         """
         Construct the kernel for the GPs which generate the GWP.
 
-        params: The kernel parameters of dimension ν x N x h where ν is the
-                d.f., N is the dimensionality of the data, and h is the number
-                of parameters for the kernel function.
-        times:  The timepoints to generate for.
+        params: The array of tau parameters, of size Nu * N.
+        times: The times to compute the pairwise kernel function at.
         
         Returns a νNT x νNT kernel matrix.
         """
@@ -67,28 +64,30 @@ class GeneralizedWishartProcess(object):
         L: The lower cholesky decomposition of the scale parameter for the
            Wishart distribution (of dimension N x N).
         u: The fitted GP function values that generate the draw from the Wishart
-           distribution. Dimensionality: ν x N.
+           distribution, of size Nu * N.
 
         Returns the N x N covariance matrix.
         """
         Sig = np.zeros(L.shape)
         for nu in range(self.Nu):
             idx = nu * self.N
-            Sig += np.matmul(L, np.matmul(np.outer(u[idx:(idx+self.N)], u[idx:(idx+self.N)]), L.T))
+            Sig += np.matmul(L, np.matmul(
+                np.outer(u[idx:(idx+self.N)], u[idx:(idx+self.N)]),
+                L.T
+            ))
 
         return Sig
 
     def _log_data_likelihood(self, u, L):
         """
-        We use the simplest possible data likelihood: sum over all times t in
-        [T], computing the probability of observing the data given that it comes
-        from the distribution r(t) ~ N(0, Σ(t)).
+        Compute the likelihood of observing the data given the model parameters
+        u and L which completely determine �. We use the simplest possible data
+        likelihood: sum over all times t in 1, ..., T and computing the log-
+        probability of observing the data given that it comes from the
+        distribution r(t) ~ N(0, Σ(t)).
 
-        data: The observed data, of shape N x T.
-        u:    The flattened vector of constructive GP function values, in order
-              Nu, T, N.
-        L:    The lower cholesky decomposition of the scale Wishart prior.
-        Nu:   d.f.
+        u:    The vector of GP function values, of size Nu * N * T.
+        L:    The lower Cholesky factor of the scale Wishart prior.
 
         Returns the log-likelihood of observing the data given the model
         parameters.
@@ -97,18 +96,30 @@ class GeneralizedWishartProcess(object):
         T = self.data.shape[1]
         for t in range(T):
             idx = self.Nu * self.N * t
-            Siginv = np.linalg.inv(self.compute_sigma(L, u[idx:(idx+self.Nu*self.N)]))
+            Siginv = np.linalg.inv(
+                self.compute_sigma(L, u[idx:(idx + self.Nu*self.N)])
+            )
             term = -0.5*np.matmul(self.data[:, t].T, np.matmul(Siginv, self.data[:, t]))
             loglik += term
 
         return loglik
 
-    def _sample_u(self, f, tau, T, L, Nu, data):
+    def _sample_u(self, f, tau, L):
         """
-        Sample u (equation 15). We use elliptical slice sampling, specifically a
-        direct implementation of the algorithm in figure 2 from the original ESS
-        paper.
+        Sample the vector of GP function values given a previous setting of the
+        parameter. We use elliptical slice sampling, specifically a direct
+        implementation of the algorithm in figure 2 from the original ESS paper.
+
+        f: The previous setting of u.
+        tau: The current tau parameters.
+        L: The current L parameter.
+
+        Returns the newly sampled u and its posterior probability as a tuple.
         """
+        Nu = self.Nu
+        data = self.data
+        T = self.data.shape[1]
+
         K = self._construct_kernel(tau, range(T))
         Kinv = np.linalg.inv(K)
 
@@ -130,12 +141,23 @@ class GeneralizedWishartProcess(object):
                     angle_max = angle
                 angle = np.random.uniform(angle_min, angle_max)
 
-    def _sample_logtau(self, logtau, u, T, L, Nu, data):
+    def _sample_logtau(self, logtau, u, L):
         """
-        Sample tau (equation 16). We use standard Metropolis-Hastings, as
-        implemented in the emcee library, to sample the next position in the
-        chain.
+        Sample the next log(tau) parameter given a previous setting. We use the
+        standard Metropolis-Hastings implementation in `emcee` to get the next
+        sample.
+
+        logtau: The previous setting of the log(tau) parameters.
+        u: The current setting of u.
+        L: The current setting of L.
+
+        Returns a tuple consisting of the newly sampled log(tau) parameter and
+        its posterior probability.
         """
+        Nu = self.Nu
+        data = self.data
+        T = data.shape[1]
+
         def log_logtau_prob(logtaup):
             K = self._construct_kernel(np.exp(logtaup), range(T))
             Kinv = np.linalg.inv(K)
@@ -153,12 +175,21 @@ class GeneralizedWishartProcess(object):
 
         return logtaup, log_logtau_prob(logtaup)
 
-    def _sample_L(self, L, tau, u, Nu, data):
+    def _sample_L(self, L, u):
         """
-        Sample L (equation 17). We use standard Metropolis-Hastings, as
-        implemented in the emcee library, to sample the next position in the
-        chain.
+        Sample the next L parameter given the previous setting. We use the
+        standard Metropolis-Hastings implementation in `emcee` to get the next
+        sample.
+
+        L: The previous setting of the L parameter.
+        u: The current setting of the u parameter.
+
+        Returns a tuple consisting of the newly sampled L parameter and its
+        posterior probability.
         """
+        Nu = self.Nu
+        data = self.data
+
         def log_L_prob(Lp):
             Lpm = np.zeros(L.shape)
             Lpm[np.tril_indices(L.shape[0])] = Lp
@@ -177,15 +208,33 @@ class GeneralizedWishartProcess(object):
         return Lpm, log_L_prob(Lp)
 
     def _init_u(self, T, tau):
+        """
+        Initialize the u parameter.
+
+        T: The number of timepoints for the model fit.
+        tau: A random setting of tau.
+
+        Returns a random setting of u.
+        """
         K = self._construct_kernel(tau, range(T))
         draw = np.random.multivariate_normal(np.zeros(K.shape[0]), K)
 
         return draw
 
-    def _init_logtau(self, Nu, N):
+    def _init_logtau(self):
+        """
+        Initialize the log(tau) parameter.
+
+        Returns a random setting of log(tau).
+        """
         return np.random.normal(size=self.Nu * self.N)
 
     def _init_L(self, N):
+        """
+        Initialize the L parameter to the identity.
+
+        Returns the identity matrix scaled by the prior variance of L.
+        """
         L = np.eye(N)
 
         return L * self.parameters['L_PRIOR_VAR']
@@ -197,6 +246,8 @@ class GeneralizedWishartProcess(object):
         data: The data to fit on. Dimension N x T, where N is the number of
               assets and T is the number of timepoints. Element (n, t) is the
               return of the nth asset at time t.
+        init: A dict containing an initialization for each of the parameters.
+              Must include keys 'logtau', 'u', and 'L'.
 
         Returns the chain of samples and diagnostics (likelihood and
         posterior probabilities).
@@ -240,9 +291,30 @@ class GeneralizedWishartProcess(object):
         return samples, diagnostics
 
     def optimal_params(self, burnin=200):
+        """
+        Return the maximum a posteriori setting of parameters from the model.
+
+        burnin: The number of iterations to consider burnin. These iterations
+                will be ignored when computing the MAP estimate.
+
+        Returns the optimal sample, which is a list containing the optimal
+        settings of u, tau, and L in that order.
+        """
         return self.samples[np.argmax(self.diagnostics[burnin:, 0]) + burnin]
 
     def _predict_next_u(self, T, burnin=200):
+        """
+        Predict u for the next timepoint from the model.
+
+        T: The number of timepoints used to train the model. Timepoints
+           0, ..., T - 1 were used to train the model, and timepoint T will be
+           predicted.
+        burnin: The number of iterations to consider burnin. These iterations
+                will be ignored when computing the MAP estimate of the
+                parameters used for the prediction.
+
+        Returns the MAP estimate of the next timepoint's u.
+        """
         u, tau, L = self.optimal_params(burnin)
 
         K = self._construct_kernel(tau, range(T + 1))
@@ -255,6 +327,16 @@ class GeneralizedWishartProcess(object):
         return ustar
 
     def predict_next_timepoint(self, data, burnin=200):
+        """
+        Predict the covariance at the next timepoint from the model using the
+        MAP estimate of the parameters.
+
+        data: The data used to fit the model.
+        burnin: The number of iterations to be considered burn-in. These
+                iterations will be ignored when computing the MAP estimate.
+
+        Returns the MAP estimate of the next timepoint's covariance.
+        """
         u, tau, L = self.optimal_params(burnin)
         ustar = self._predict_next_u(data.shape[1], burnin)
 
