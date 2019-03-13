@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import emcee
 
@@ -291,6 +292,7 @@ class GeneralizedWishartProcess(object):
                 print(
                     "Iter {}: loglik = {:.2f}, log P(u|...) = {:.2f}, log P(tau|...) = {:.2f}, log P(L|...) = {:.2f}".format(it, *diagnostics[-1])
                 )
+                sys.stdout.flush()
 
         self.samples = samples
         self.diagnostics = np.asarray(diagnostics)
